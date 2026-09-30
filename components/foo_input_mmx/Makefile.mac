@@ -1,0 +1,94 @@
+# foo_input_mmx for macOS, built with clang alone (no Xcode project needed) and packed as the mac/ half
+# of a .fb2k-component. The SDK's own Xcode projects say what each library compiles; their source
+# lists are read from the pbxproj files so this never drifts from the SDK.
+#
+#   make -f Makefile.mac              universal bundle (arm64 + x86_64) in build/mac/
+#   make -f Makefile.mac package      + build/foo_input_mmx-mac.fb2k-component
+#   make -f Makefile.mac ARCHS="-arch arm64"   a quick native-only build
+SDK   ?= ../../tools/third_party/foobar2000_sdk
+ROOT  ?= ../..
+ARCHS ?= -arch arm64 -arch x86_64
+OUT   ?= build/mac
+MIN    = -mmacosx-version-min=11.0
+CC    ?= clang
+CXX   ?= clang++
+
+pbx_sources = $(shell grep -oE '[A-Za-z0-9_+.-]+\.(cpp|mm|c) in Sources' $(1) | sed 's/ in Sources//' | sort -u)
+PFC_DIR    = $(SDK)/pfc
+SDK_DIR    = $(SDK)/foobar2000/SDK
+SHARED_DIR = $(SDK)/foobar2000/shared
+CLIENT_DIR = $(SDK)/foobar2000/foobar2000_component_client
+PFC_SRCS    := $(call pbx_sources,$(PFC_DIR)/pfc.xcodeproj/project.pbxproj)
+SDK_SRCS    := $(call pbx_sources,$(SDK_DIR)/foobar2000_SDK.xcodeproj/project.pbxproj)
+SHARED_SRCS := $(call pbx_sources,$(SHARED_DIR)/shared.xcodeproj/project.pbxproj)
+CLIENT_SRCS := component_client.cpp
+OUR_SRCS    := main.cpp input_mmx.cpp
+# the decoder-only subset of the codec core (no encoder, no analyzer, no threads)
+CORE_SRCS   := audio_buffer.c codec.c crc32.c decoder.c fft.c framecodec.c log.c lossless.c mdct.c mmx_format.c \
+               mmx_io.c mmx_reader.c mmx_table.c nlms.c ll2.c ll2coder.c ll2codec.c workers.c psymodel.c rangecoder.c spectrum.c tns.c
+
+EXTRA   ?=
+COMMON   = $(ARCHS) $(MIN) -O2 -DNDEBUG=1 $(EXTRA) -fvisibility=hidden -I$(SDK)/foobar2000 -I$(SDK) -I.
+CXXFLAGS = $(COMMON) -std=gnu++20 -stdlib=libc++ -fvisibility-inlines-hidden -Wno-deprecated-declarations
+OBJCXX   = -fobjc-arc -fobjc-weak
+CFLAGS   = $(ARCHS) $(MIN) -O2 -std=c99 -ffp-contract=off -I$(ROOT)/include -I$(ROOT)/src
+
+PFC_OBJS    := $(addprefix $(OUT)/pfc/,$(addsuffix .o,$(PFC_SRCS)))
+SDK_OBJS    := $(addprefix $(OUT)/sdk/,$(addsuffix .o,$(SDK_SRCS)))
+SHARED_OBJS := $(addprefix $(OUT)/shared/,$(addsuffix .o,$(SHARED_SRCS)))
+CLIENT_OBJS := $(addprefix $(OUT)/client/,$(addsuffix .o,$(CLIENT_SRCS)))
+OUR_OBJS    := $(addprefix $(OUT)/mmx/,$(addsuffix .o,$(OUR_SRCS)))
+CORE_OBJS   := $(addprefix $(OUT)/core/,$(addsuffix .o,$(CORE_SRCS)))
+ALL_OBJS    := $(OUR_OBJS) $(CORE_OBJS) $(CLIENT_OBJS) $(SDK_OBJS) $(SHARED_OBJS) $(PFC_OBJS)
+
+BUNDLE = $(OUT)/foo_input_mmx.component
+BIN    = $(BUNDLE)/Contents/MacOS/foo_input_mmx
+
+all: bundle
+bundle: $(BIN)
+
+$(OUT)/pfc/%.cpp.o: $(PFC_DIR)/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -include $(PFC_DIR)/pfc-lite.h -c -o $@ $<
+$(OUT)/pfc/%.mm.o: $(PFC_DIR)/%.mm
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(OBJCXX) -include $(PFC_DIR)/pfc-lite.h -c -o $@ $<
+$(OUT)/sdk/%.cpp.o: $(SDK_DIR)/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -include $(SDK_DIR)/foobar2000-sdk-pch.h -c -o $@ $<
+$(OUT)/sdk/%.mm.o: $(SDK_DIR)/%.mm
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(OBJCXX) -include $(SDK_DIR)/foobar2000-sdk-pch.h -c -o $@ $<
+$(OUT)/shared/%.cpp.o: $(SHARED_DIR)/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -include $(SHARED_DIR)/shared.h -c -o $@ $<
+$(OUT)/shared/%.mm.o: $(SHARED_DIR)/%.mm
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(OBJCXX) -include $(SHARED_DIR)/shared.h -c -o $@ $<
+$(OUT)/client/%.cpp.o: $(CLIENT_DIR)/%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+$(OUT)/mmx/%.cpp.o: %.cpp stdafx.h version.h
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) -include stdafx.h -I$(ROOT)/include -c -o $@ $<
+$(OUT)/core/%.c.o: $(ROOT)/src/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BIN): $(ALL_OBJS) Info.plist
+	@mkdir -p $(@D)
+	cp Info.plist $(BUNDLE)/Contents/Info.plist
+	$(CXX) $(ARCHS) $(MIN) -bundle -stdlib=libc++ -ObjC -o $@ $(ALL_OBJS) -framework Cocoa
+	codesign --sign - --force --deep $(BUNDLE)
+	@echo "built $(BUNDLE)"
+
+# foobar2000 (v2.6+) expects the bundle under mac/ inside the .fb2k-component zip
+package: bundle
+	rm -rf $(OUT)/pkg && mkdir -p $(OUT)/pkg/mac && cp -R $(BUNDLE) $(OUT)/pkg/mac/
+	rm -f build/foo_input_mmx-mac.fb2k-component
+	cd $(OUT)/pkg && ditto --noqtn -ck --norsrc . ../../foo_input_mmx-mac.fb2k-component
+	@echo "packed build/foo_input_mmx-mac.fb2k-component"
+
+clean:
+	rm -rf $(OUT) build/foo_input_mmx-mac.fb2k-component
+.PHONY: all bundle package clean

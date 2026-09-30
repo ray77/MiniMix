@@ -1,0 +1,234 @@
+# Builds and checks everything that ships, and publishes it on a tag v*:
+#   mmx         the command-line codec and terminal player: macOS universal, Windows x64 (static, MinGW-w64)
+#   component   foo_input_mmx.fb2k-component for foobar2000: the Windows x64 DLL (MSVC) and the macOS bundle
+# Every build decodes the checked-in test vectors bit for bit; the mmx builds also encode them, and a last job decodes
+# what each platform encoded on Linux (a file written anywhere must decode exactly everywhere). The foobar2000 SDK is
+# downloaded from foobar2000.org and pinned by hash.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDK_URL: https://www.foobar2000.org/downloads/SDK-2026-09-17.7z
+  SDK_SHA256: 24fa95ed66b42624f593fd4b94c5efb08ae81dfebb92b79fe69c8cd170961e48
+  SDK_DIR: tools/third_party/foobar2000_sdk
+  VECTORS: lossless:vector lossless8:vector lossless10:vector lossless10c:vector_clip lossless10h:vector24 lossless10i:vector32 lossless10p:vector_loop
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test, decoder check (gcc)
+        run: make -j4 && make test && make check-decoder
+      - name: Encode the vectors, play one on the null device
+        run: |
+          mkdir -p enc
+          for w in vector vector24 vector32 vector_loop; do bin/mmx encode components/foo_input_mmx/testdata/$w.wav enc/$w.linux.mmx --quiet; done
+          MMX_PLAY_NULL=1 bin/mmx play enc/vector_loop.linux.mmx < /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encoded-linux
+          path: enc/
+
+  mmx-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (universal)
+        run: make -j4 CFLAGS="-O2 -std=c99 -pedantic -Wall -Wextra -Wno-long-long -arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
+      - name: Test (native) and decoder check
+        run: make test CFLAGS="-O2 -std=c99 -pedantic -Wall -Wextra -Wno-long-long -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" && make check-decoder
+      - name: Encode the vectors, check them, play one on the null device
+        run: |
+          file bin/mmx | grep -q x86_64 && file bin/mmx | grep -q arm64
+          mkdir -p enc
+          for w in vector vector24 vector32 vector_loop; do
+            bin/mmx encode components/foo_input_mmx/testdata/$w.wav enc/$w.macos.mmx --quiet
+            bin/decode_check enc/$w.macos.mmx components/foo_input_mmx/testdata/$w.wav exact
+          done
+          MMX_PLAY_NULL=1 bin/mmx play enc/vector_loop.macos.mmx < /dev/null
+      - name: Package
+        run: |
+          mkdir -p dist && cp bin/mmx README.md LICENSE THIRD_PARTY_NOTICES dist/
+          (cd dist && zip -q ../mmx-macos-universal.zip *)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mmx-macos-universal
+          path: mmx-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encoded-macos
+          path: enc/
+
+  mmx-windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc make zip
+      - name: Build (static), test, decoder check
+        run: make -j4 CC=gcc LDLIBS="-lm -static" && make test CC=gcc LDLIBS="-lm -static" && make check-decoder CC=gcc LDLIBS="-lm -static"
+      - name: Encode the vectors, check them, play one on the null device
+        run: |
+          mkdir -p enc
+          for w in vector vector24 vector32 vector_loop; do
+            bin/mmx.exe encode components/foo_input_mmx/testdata/$w.wav enc/$w.windows.mmx --quiet
+            bin/decode_check.exe enc/$w.windows.mmx components/foo_input_mmx/testdata/$w.wav exact
+          done
+          MMX_PLAY_NULL=1 bin/mmx.exe play enc/vector_loop.windows.mmx < /dev/null
+      - name: Package
+        run: |
+          mkdir -p dist && cp bin/mmx.exe README.md LICENSE THIRD_PARTY_NOTICES dist/
+          (cd dist && zip -q ../mmx-windows-x64.zip *)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mmx-windows-x64
+          path: mmx-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: encoded-windows
+          path: enc/
+
+  cross-check:
+    needs: [linux, mmx-macos, mmx-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: encoded-*
+          merge-multiple: true
+          path: enc
+      - name: Every platform's files decode exactly here
+        run: |
+          make bin/decode_check
+          for f in enc/*.mmx; do w=$(basename "$f"); w=${w%%.*}; bin/decode_check "$f" components/foo_input_mmx/testdata/$w.wav exact; done
+
+  fb2k-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: foobar2000 SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:SDK_URL -OutFile sdk.7z
+          $hash = (Get-FileHash sdk.7z -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:SDK_SHA256) { throw "SDK hash mismatch: $hash" }
+          New-Item -ItemType Directory -Force $env:SDK_DIR | Out-Null
+          & 7z x sdk.7z "-o$env:SDK_DIR" | Out-Null
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build (x64 Release)
+        run: msbuild components\foo_input_mmx\foo_input_mmx.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+      - name: Decoder check under MSVC
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cl /nologo /O2 /W3 /fp:precise /D_CRT_SECURE_NO_WARNINGS /Iinclude /Isrc /Fe:decode_check.exe tools\decode_check.c src\audio_buffer.c src\codec.c src\crc32.c src\decoder.c src\fft.c src\framecodec.c src\log.c src\lossless.c src\mdct.c src\mmx_format.c src\mmx_io.c src\mmx_reader.c src\mmx_table.c src\nlms.c src\ll2.c src\ll2coder.c src\ll2codec.c src\workers.c src\psymodel.c src\rangecoder.c src\spectrum.c src\tns.c || exit /b 1
+          for %%v in (%VECTORS%) do for /f "tokens=1,2 delims=:" %%a in ("%%v") do decode_check.exe components\foo_input_mmx\testdata\%%a.mmx components\foo_input_mmx\testdata\%%b.wav exact || exit /b 1
+          decode_check.exe components\foo_input_mmx\testdata\q7.mmx components\foo_input_mmx\testdata\q7.ref.wav snr || exit /b 1
+      - name: Stage
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\x64 | Out-Null
+          Copy-Item components\foo_input_mmx\build\win\x64\Release\foo_input_mmx.dll dist\x64\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fb2k-windows-x64
+          path: dist/x64/foo_input_mmx.dll
+
+  fb2k-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: foobar2000 SDK
+        run: |
+          curl -sSL -o sdk.7z "$SDK_URL"
+          echo "$SDK_SHA256  sdk.7z" | shasum -a 256 -c -
+          mkdir -p "$SDK_DIR" && tar -xf sdk.7z -C "$SDK_DIR"
+      - name: Build (universal) and pack mac/
+        run: make -C components/foo_input_mmx -f Makefile.mac -j4 package
+      - name: Verify
+        run: |
+          B=components/foo_input_mmx/build/mac/foo_input_mmx.component
+          file "$B/Contents/MacOS/foo_input_mmx" | grep -q "x86_64" && file "$B/Contents/MacOS/foo_input_mmx" | grep -q "arm64"
+          nm -gU "$B/Contents/MacOS/foo_input_mmx" | grep -q foobar2000_get_interface
+          codesign -dv "$B" 2>&1 | grep -q "Signature=adhoc"
+      - name: Decoder check under clang
+        run: |
+          make bin/decode_check
+          for v in $VECTORS; do bin/decode_check components/foo_input_mmx/testdata/${v%%:*}.mmx components/foo_input_mmx/testdata/${v##*:}.wav exact; done
+          bin/decode_check components/foo_input_mmx/testdata/q7.mmx components/foo_input_mmx/testdata/q7.ref.wav snr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fb2k-macos-universal
+          path: components/foo_input_mmx/build/foo_input_mmx-mac.fb2k-component
+
+  fb2k-package:
+    needs: [fb2k-windows, fb2k-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fb2k-macos-universal
+      - uses: actions/download-artifact@v4
+        with:
+          name: fb2k-windows-x64
+          path: x64
+      - name: Merge into one component
+        # zip -g appends to the Mac-made archive, so the signed bundle's bytes stay untouched
+        run: |
+          cp foo_input_mmx-mac.fb2k-component foo_input_mmx.fb2k-component
+          zip -g foo_input_mmx.fb2k-component x64/foo_input_mmx.dll
+          zip -g foo_input_mmx.fb2k-component LICENSE THIRD_PARTY_NOTICES
+          unzip -l foo_input_mmx.fb2k-component
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foo_input_mmx.fb2k-component
+          path: foo_input_mmx.fb2k-component
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cross-check, mmx-macos, mmx-windows, fb2k-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Name the files after the tag
+        run: |
+          V=${GITHUB_REF_NAME}
+          mkdir -p out
+          cp art/mmx-macos-universal/mmx-macos-universal.zip out/mmx-$V-macos-universal.zip
+          cp art/mmx-windows-x64/mmx-windows-x64.zip out/mmx-$V-windows-x64.zip
+          cp art/foo_input_mmx.fb2k-component/foo_input_mmx.fb2k-component out/foo_input_mmx-$V.fb2k-component
+          ls -la out
+          cat > notes.md <<EOF
+          **mmx** - the MiniMix command line: encode (lossless), decode, play in the terminal, info.
+          - macOS (Apple Silicon and Intel, macOS 11+): unzip, then \`xattr -d com.apple.quarantine mmx\` once
+            (the binary is not notarized) and run \`./mmx play song.mmx\`.
+          - Windows x64: unzip and run \`mmx.exe play song.mmx\` in a terminal.
+
+          **foo_input_mmx** - plays .mmx in foobar2000 2.x on Windows x64 and macOS: double-click the
+          .fb2k-component or install it under Preferences > Components.
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: notes.md
+          files: out/*

@@ -1,0 +1,39 @@
+# Music and everything derived from it never enters the repository (copyrighted recordings;
+# an encoded file is the same music in another container).
+audio_input/
+work/
+output/
+*.wav
+*.flac
+*.mmx
+*.ofr
+*.wv
+*.mp3
+*.opus
+*.ogg
+*.m4a
+*.aac
+
+# build products
+bin/
+build/
+lib/
+*.o
+*.a
+*.d
+*.dSYM/
+
+# downloaded third-party parts (the foobar2000 SDK, comparison encoders)
+tools/third_party/
+
+# scratch
+*.log
+.DS_Store
+nohup.out
+
+# foobar2000 component build output
+components/foo_input_mmx/build/
+
+# the foobar2000 component's test vectors are the one audio the repo keeps
+!components/foo_input_mmx/testdata/*.wav
+!components/foo_input_mmx/testdata/*.mmx

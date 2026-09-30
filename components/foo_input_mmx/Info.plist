@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>	<string>en</string>
+	<key>CFBundleExecutable</key>		<string>foo_input_mmx</string>
+	<key>CFBundleIdentifier</key>		<string>org.minimix.foo-input-mmx</string>
+	<key>CFBundleInfoDictionaryVersion</key>	<string>6.0</string>
+	<key>CFBundleName</key>			<string>foo_input_mmx</string>
+	<key>CFBundlePackageType</key>		<string>BNDL</string>
+	<key>CFBundleShortVersionString</key>	<string>0.3.0</string>
+	<key>CFBundleVersion</key>		<string>3</string>
+	<key>LSMinimumSystemVersion</key>	<string>11.0</string>
+	<key>NSHumanReadableCopyright</key>	<string>Copyright (c) 2026 Domy Schmidt, MIT licence</string>
+</dict>
+</plist>
