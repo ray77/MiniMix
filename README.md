@@ -15,7 +15,7 @@ core, patchwork landscape decoding, the foobar2000 component and the former loss
 
 | | |
 |---|---|
-| CD audio, 81 titles (16 bit, 44.1 kHz) | −6.96 % against FLAC -8, −1.50 % against OptimFROG (max); 79 of 81 smaller |
+| CD audio, 82 titles (16 bit, 44.1 kHz) | −6.90 % against FLAC -8, −1.46 % against OptimFROG (max); 77 of 82 smaller |
 | Hi-res (24 bit, 88.2 kHz) | −0.89 % against OptimFROG; 24- and 32-bit PCM, up to 384 kHz, RF64/Wave64 |
 | Decoding (Apple M1) | about 10–25× realtime; 30-s segments decode side by side ([PLD](#patchwork-landscape-decoding-pld)) |
 
